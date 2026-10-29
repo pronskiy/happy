@@ -178,9 +178,6 @@ async function handleAuthStatus(): Promise<void> {
 
   console.log(chalk.green('✓ Authenticated'));
 
-  // Token preview (first few chars for security)
-  const tokenPreview = credentials.token.substring(0, 30) + '...';
-  console.log(chalk.gray(`  Token: ${tokenPreview}`));
 
   // Machine status
   if (settings?.machineId) {

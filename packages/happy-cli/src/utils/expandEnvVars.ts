@@ -54,14 +54,7 @@ export function expandEnvironmentVariables(
             const resolvedValue = sourceEnv[varName];
             if (resolvedValue !== undefined) {
                 // Variable found in source environment - use its value
-                // Log for debugging (mask secret-looking values)
-                const isSensitive = varName.toLowerCase().includes('token') ||
-                                   varName.toLowerCase().includes('key') ||
-                                   varName.toLowerCase().includes('secret');
-                const displayValue = isSensitive
-                    ? (resolvedValue ? `<${resolvedValue.length} chars>` : '<empty>')
-                    : resolvedValue;
-                logger.debug(`[EXPAND ENV] Expanded ${varName} from daemon env: ${displayValue}`);
+                logger.debug(`[EXPAND ENV] Expanded ${varName} from daemon environment`);
 
                 // Warn if empty string (common mistake)
                 if (resolvedValue === '') {
@@ -71,7 +64,7 @@ export function expandEnvironmentVariables(
                 return resolvedValue;
             } else if (defaultValue !== undefined) {
                 // Variable not found but default value provided - use default
-                logger.debug(`[EXPAND ENV] Using default value for ${varName}: ${defaultValue}`);
+                logger.debug(`[EXPAND ENV] Using default value for ${varName}`);
                 return defaultValue;
             } else {
                 // Variable not found and no default - keep placeholder and warn

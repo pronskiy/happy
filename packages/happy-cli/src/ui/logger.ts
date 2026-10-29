@@ -6,7 +6,8 @@
  */
 
 import chalk from 'chalk'
-import { appendFileSync } from 'fs'
+import { appendPrivateFileSync } from '@/utils/privateFiles'
+import { redactSecrets } from './redactSecrets'
 import { inspect } from 'node:util'
 import { configuration } from '@/configuration'
 import { existsSync, readdirSync, statSync } from 'node:fs'
@@ -46,14 +47,14 @@ function getSessionLogPath(): string {
   return join(configuration.logsDir, filename)
 }
 
-class Logger {
+export class Logger {
   private dangerouslyUnencryptedServerLoggingUrl: string | undefined
 
   constructor(
     public readonly logFilePath = getSessionLogPath()
   ) {
     // Remote logging enabled only when explicitly set with server URL
-    if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING 
+    if (['1', 'true'].includes(process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ?? '')
       && process.env.HAPPY_SERVER_URL) {
       this.dangerouslyUnencryptedServerLoggingUrl = process.env.HAPPY_SERVER_URL
       console.log(chalk.yellow('[REMOTE LOGGING] Sending logs to server for AI debugging'))
@@ -67,6 +68,7 @@ class Logger {
   }
 
   debug(message: string, ...args: unknown[]): void {
+    if (!this.debugEnabled()) return
     this.logToFile(`[${this.localTimezoneTimestamp()}]`, message, ...args)
 
     // NOTE: @kirill does not think its a good ideas,
@@ -85,9 +87,7 @@ class Logger {
     maxStringLength: number = 100,
     maxArrayLength: number = 10,
   ): void {
-    if (!process.env.DEBUG) {
-      this.debug(`In production, skipping message inspection`)
-    }
+    if (!this.debugEnabled()) return
 
     // Some of our messages are huge, but we still want to show them in the logs
     const truncateStrings = (obj: unknown): unknown => {
@@ -120,7 +120,7 @@ class Logger {
       return obj
     }
 
-    const truncatedObject = truncateStrings(object)
+    const truncatedObject = truncateStrings(redactSecrets(object))
     const json = JSON.stringify(truncatedObject, null, 2)
     this.logToFile(`[${this.localTimezoneTimestamp()}]`, message, '\n', json)
   }
@@ -135,7 +135,7 @@ class Logger {
     this.debug(message, ...args)
     
     // Write to info if DEBUG mode is on
-    if (process.env.DEBUG) {
+    if (this.debugEnabled()) {
       this.logToConsole('info', '[DEV]', message, ...args)
     }
   }
@@ -148,8 +148,14 @@ class Logger {
   getLogPath(): string {
     return this.logFilePath
   }
+
+  private debugEnabled(): boolean {
+    return Boolean(process.env.DEBUG) && !['0', 'false'].includes(process.env.DEBUG!.toLowerCase())
+  }
   
   private logToConsole(level: 'debug' | 'error' | 'info' | 'warn', prefix: string, message: string, ...args: unknown[]): void {
+    message = redactSecrets(message) as string
+    args = args.map(arg => redactSecrets(arg))
     switch (level) {
       case 'debug': {
         console.log(chalk.gray(prefix), message, ...args)
@@ -202,6 +208,8 @@ class Logger {
   }
 
   private logToFile(prefix: string, message: string, ...args: unknown[]): void {
+    message = redactSecrets(message) as string
+    args = args.map(arg => redactSecrets(arg))
     const logLine = `${prefix} ${message} ${args.map(arg =>
       typeof arg === 'string' ? arg : inspect(arg, { depth: 5, breakLength: 120 })
     ).join(' ')}\n`
@@ -221,7 +229,7 @@ class Logger {
     
     // Handle async file path
     try {
-      appendFileSync(this.logFilePath, logLine)
+      appendPrivateFileSync(this.logFilePath, logLine)
     } catch (appendError) {
       if (process.env.DEBUG) {
         console.error('[DEV MODE ONLY THROWING] Failed to append to log file:', appendError)

@@ -77,6 +77,10 @@ export class RpcHandlerManager {
             // Decrypt the incoming params
             const decryptedParams = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(request.params));
 
+            if (decryptedParams === null || decryptedParams === undefined) {
+                throw new Error('Invalid encrypted RPC parameters');
+            }
+
             // Call the handler
             this.logger('[RPC] Calling handler', { method: request.method });
             const result = await handler(decryptedParams);

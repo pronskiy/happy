@@ -1,5 +1,5 @@
 import { logger } from '@/ui/logger'
-import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledHappyVersion } from './controlClient'
+import { isDaemonRunningCurrentlyInstalledHappyVersion } from './controlClient'
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { sanitizeSessionEnvironment } from './sessionEnvironment'
 
@@ -28,7 +28,7 @@ export async function ensureDaemonRunning(): Promise<void> {
   // silently lost — which later breaks resume-happy-session.
   const deadline = Date.now() + DAEMON_READY_TIMEOUT_MS
   while (Date.now() < deadline) {
-    if (await checkIfDaemonRunningAndCleanupStaleState()) {
+    if (await isDaemonRunningCurrentlyInstalledHappyVersion()) {
       logger.debug('Happy background service is ready')
       return
     }

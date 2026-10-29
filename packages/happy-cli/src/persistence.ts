@@ -5,7 +5,7 @@
  */
 
 import { FileHandle } from 'node:fs/promises'
-import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
+import { mkdir, open, unlink, rename, stat } from 'node:fs/promises'
 import { existsSync, writeFileSync, readFileSync, unlinkSync, renameSync, linkSync } from 'node:fs'
 import { constants } from 'node:fs'
 import os from 'node:os'
@@ -14,6 +14,7 @@ import * as z from 'zod';
 import { encodeBase64, decodeBase64 } from '@/api/encryption';
 import type { Metadata } from '@/api/types';
 import { logger } from '@/ui/logger';
+import { ensurePrivateDirectory, readPrivateFileSync, writePrivateFileSync } from '@/utils/privateFiles';
 
 export const SandboxConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -74,6 +75,8 @@ function migrateSettings(raw: any, fromVersion: number): any {
 export interface DaemonLocallyPersistedState {
   pid: number;
   httpPort: number;
+  /** Local IPC credential. Never publish it to the sync server or diagnostics. */
+  controlToken?: string;
   startTime: string;
   startedWithCliVersion: string;
   lastHeartbeat?: string;
@@ -87,7 +90,7 @@ export async function readSettings(): Promise<Settings> {
 
   try {
     // Read raw settings
-    const content = await readFile(configuration.settingsFile, 'utf8')
+    const content = readPrivateFileSync(configuration.settingsFile)
     const raw = JSON.parse(content)
 
     // Check schema version (default to 1 if missing)
@@ -123,9 +126,7 @@ export async function readSettings(): Promise<Settings> {
 }
 
 export async function writeSettings(settings: Settings): Promise<void> {
-  if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
-  }
+  ensurePrivateDirectory(configuration.happyHomeDir);
 
   // Ensure schema version is set before writing
   const settingsWithVersion = {
@@ -133,7 +134,7 @@ export async function writeSettings(settings: Settings): Promise<void> {
     schemaVersion: settings.schemaVersion ?? SUPPORTED_SCHEMA_VERSION
   };
 
-  await writeFile(configuration.settingsFile, JSON.stringify(settingsWithVersion, null, 2))
+  writePrivateFileSync(configuration.settingsFile, JSON.stringify(settingsWithVersion, null, 2))
 }
 
 /**
@@ -196,7 +197,7 @@ export async function updateSettings(
     }
 
     // Write atomically using rename
-    await writeFile(tmpFile, JSON.stringify(updated, null, 2));
+    writePrivateFileSync(tmpFile, JSON.stringify(updated, null, 2));
     await rename(tmpFile, configuration.settingsFile); // Atomic on POSIX
 
     return updated;
@@ -234,7 +235,7 @@ export async function readCredentials(): Promise<Credentials | null> {
     return null
   }
   try {
-    const keyBase64 = (await readFile(configuration.privateKeyFile, 'utf8'));
+    const keyBase64 = readPrivateFileSync(configuration.privateKeyFile);
     const credentials = credentialsSchema.parse(JSON.parse(keyBase64));
     if (credentials.secret) {
       return {
@@ -261,20 +262,16 @@ export async function readCredentials(): Promise<Credentials | null> {
 }
 
 export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, token: string }): Promise<void> {
-  if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
-  }
-  await writeFile(configuration.privateKeyFile, JSON.stringify({
+  ensurePrivateDirectory(configuration.happyHomeDir);
+  writePrivateFileSync(configuration.privateKeyFile, JSON.stringify({
     secret: encodeBase64(credentials.secret),
     token: credentials.token
   }, null, 2));
 }
 
 export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Array, machineKey: Uint8Array, token: string }): Promise<void> {
-  if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
-  }
-  await writeFile(configuration.privateKeyFile, JSON.stringify({
+  ensurePrivateDirectory(configuration.happyHomeDir);
+  writePrivateFileSync(configuration.privateKeyFile, JSON.stringify({
     encryption: { publicKey: encodeBase64(credentials.publicKey), machineKey: encodeBase64(credentials.machineKey) },
     token: credentials.token
   }, null, 2));
@@ -301,7 +298,7 @@ export async function readDaemonState(): Promise<DaemonLocallyPersistedState | n
     if (!existsSync(configuration.daemonStateFile)) {
       return null;
     }
-    const content = await readFile(configuration.daemonStateFile, 'utf-8');
+    const content = readPrivateFileSync(configuration.daemonStateFile);
     return JSON.parse(content) as DaemonLocallyPersistedState;
   } catch (error) {
     // State corrupted somehow :(
@@ -314,7 +311,13 @@ export async function readDaemonState(): Promise<DaemonLocallyPersistedState | n
  * Write daemon state to local file (synchronously for atomic operation)
  */
 export function writeDaemonState(state: DaemonLocallyPersistedState): void {
-  writeFileSync(configuration.daemonStateFile, JSON.stringify(state, null, 2), 'utf-8');
+  const tempFile = `${configuration.daemonStateFile}.${process.pid}.tmp`;
+  try {
+    writePrivateFileSync(tempFile, JSON.stringify(state, null, 2));
+    renameSync(tempFile, configuration.daemonStateFile);
+  } finally {
+    if (existsSync(tempFile)) unlinkSync(tempFile);
+  }
 }
 
 /**
@@ -473,7 +476,7 @@ function isSessionProcessRunning(session: PersistedSession): boolean {
 export function readPersistedSessions(): Record<string, PersistedSession> {
   try {
     if (!existsSync(configuration.sessionsFile)) return {};
-    const data = JSON.parse(readFileSync(configuration.sessionsFile, 'utf-8')) as SessionsFile;
+    const data = JSON.parse(readPrivateFileSync(configuration.sessionsFile)) as SessionsFile;
     if (!data?.sessions || typeof data.sessions !== 'object') return {};
 
     const now = Date.now();
@@ -506,7 +509,7 @@ export function markSessionStopped(sessionId: string): void {
     // The process has already exited, so expiry filtering could hide the very
     // record whose retention window needs to start now.
     if (!existsSync(configuration.sessionsFile)) return;
-    const data: SessionsFile = JSON.parse(readFileSync(configuration.sessionsFile, 'utf-8'));
+    const data: SessionsFile = JSON.parse(readPrivateFileSync(configuration.sessionsFile));
     const session = data.sessions?.[sessionId];
     if (!session) return;
     persistSession(sessionId, { ...session, lastAliveAt: Date.now() });
@@ -517,7 +520,7 @@ export function markSessionStopped(sessionId: string): void {
 
 function writeSessionsFile(sessions: Record<string, PersistedSession>): void {
   const tmpFile = configuration.sessionsFile + '.tmp';
-  writeFileSync(tmpFile, JSON.stringify({ sessions }, null, 2), 'utf-8');
+  writePrivateFileSync(tmpFile, JSON.stringify({ sessions }, null, 2));
   renameSync(tmpFile, configuration.sessionsFile);
 }
 
