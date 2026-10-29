@@ -88,7 +88,7 @@ export async function runDoctorDaemon(): Promise<void> {
         if (state) {
             console.log(chalk.bold('\n📄 Daemon State:'));
             console.log(chalk.blue(`Location: ${configuration.daemonStateFile}`));
-            console.log(chalk.gray(JSON.stringify(state, null, 2)));
+            console.log(chalk.gray(JSON.stringify({ ...state, controlToken: '[REDACTED]' }, null, 2)));
         }
     } catch (error) {
         console.log(chalk.red('❌ Error checking daemon status'));
@@ -272,7 +272,7 @@ export async function runDoctorCommand(): Promise<void> {
         if (state) {
             console.log(chalk.bold('\n📄 Daemon State:'));
             console.log(chalk.blue(`Location: ${configuration.daemonStateFile}`));
-            console.log(chalk.gray(JSON.stringify(state, null, 2)));
+            console.log(chalk.gray(JSON.stringify({ ...state, controlToken: '[REDACTED]' }, null, 2)));
         }
     } catch (error) {
         console.log(chalk.red('❌ Error checking daemon status'));

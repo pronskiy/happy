@@ -11,8 +11,9 @@ import { Metadata } from '@/api/types';
 import { decodeBase64 } from '@/api/encryption';
 import { TrackedSession, SessionEncryptionData } from './types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
-export function startDaemonControlServer({
+export function createDaemonControlApp({
   getChildren,
   stopSession,
   spawnSession,
@@ -26,215 +27,228 @@ export function startDaemonControlServer({
   requestShutdown: () => void;
   onHappySessionWebhook: (sessionId: string, metadata: Metadata, encryption?: SessionEncryptionData) => void;
   getConnectionStatus?: () => { machineId: string; cliVersion: string; serverUrl: string; connected: boolean };
-}): Promise<{ port: number; stop: () => Promise<void> }> {
-  return new Promise((resolve) => {
-    const app = fastify({
-      logger: false // We use our own logger
-    });
-
-    // Set up Zod type provider
-    app.setValidatorCompiler(validatorCompiler);
-    app.setSerializerCompiler(serializerCompiler);
-    const typed = app.withTypeProvider<ZodTypeProvider>();
-
-    typed.post('/status', async () => getConnectionStatus?.() ?? { machineId: null, connected: false });
-
-    // Session reports itself after creation
-    typed.post('/session-started', {
-      schema: {
-        body: z.object({
-          sessionId: z.string(),
-          metadata: z.any(),
-          encryption: z.object({
-            encryptionKey: z.string(),
-            encryptionVariant: z.enum(['legacy', 'dataKey']),
-            seq: z.number(),
-            metadataVersion: z.number(),
-            agentStateVersion: z.number(),
-          }).optional()
-        }),
-        response: {
-          200: z.object({
-            status: z.literal('ok')
-          })
-        }
-      }
-    }, async (request) => {
-      const { sessionId, metadata, encryption } = request.body;
-
-      logger.debug(`[CONTROL SERVER] Session started: ${sessionId}`);
-
-      let encryptionData: SessionEncryptionData | undefined;
-      if (encryption) {
-        encryptionData = {
-          encryptionKey: decodeBase64(encryption.encryptionKey),
-          encryptionVariant: encryption.encryptionVariant,
-          seq: encryption.seq,
-          metadataVersion: encryption.metadataVersion,
-          agentStateVersion: encryption.agentStateVersion,
-        };
-      }
-
-      onHappySessionWebhook(sessionId, metadata, encryptionData);
-
-      return { status: 'ok' as const };
-    });
-
-    // List all tracked sessions
-    typed.post('/list', {
-      schema: {
-        response: {
-          200: z.object({
-            children: z.array(z.object({
-              startedBy: z.string(),
-              happySessionId: z.string(),
-              pid: z.number()
-            }))
-          })
-        }
-      }
-    }, async () => {
-      const children = getChildren();
-      logger.debug(`[CONTROL SERVER] Listing ${children.length} sessions`);
-      return { 
-        children: children
-          .filter(child => child.happySessionId !== undefined)
-          .map(child => ({
-            startedBy: child.startedBy,
-            happySessionId: child.happySessionId!,
-            pid: child.pid
-          }))
-      }
-    });
-
-    // Stop specific session
-    typed.post('/stop-session', {
-      schema: {
-        body: z.object({
-          sessionId: z.string()
-        }),
-        response: {
-          200: z.object({
-            success: z.boolean()
-          })
-        }
-      }
-    }, async (request) => {
-      const { sessionId } = request.body;
-
-      logger.debug(`[CONTROL SERVER] Stop session request: ${sessionId}`);
-      const success = stopSession(sessionId);
-      return { success };
-    });
-
-    // Spawn new session
-    typed.post('/spawn-session', {
-      schema: {
-        body: z.object({
-          directory: z.string(),
-          sessionId: z.string().optional(),
-          agent: z.enum(['claude', 'codex', 'gemini', 'openclaw', 'agy']).optional(),
-          permissionMode: z.string().optional(),
-          modelMode: z.string().optional(),
-          effortLevel: z.string().optional(),
-          environmentVariables: z.record(z.string(), z.string()).optional(),
-        }),
-        response: {
-          200: z.object({
-            success: z.boolean(),
-            sessionId: z.string().optional(),
-            approvedNewDirectoryCreation: z.boolean().optional()
-          }),
-          409: z.object({
-            success: z.boolean(),
-            requiresUserApproval: z.boolean().optional(),
-            actionRequired: z.string().optional(),
-            directory: z.string().optional()
-          }),
-          500: z.object({
-            success: z.boolean(),
-            error: z.string().optional()
-          })
-        }
-      }
-    }, async (request, reply) => {
-      const { directory, sessionId, agent, permissionMode, modelMode, effortLevel, environmentVariables } = request.body;
-
-      logger.debug(`[CONTROL SERVER] Spawn session request: dir=${directory}, sessionId=${sessionId || 'new'}, agent=${agent || 'default'}`);
-      const result = await spawnSession({ directory, sessionId, agent, permissionMode, modelMode, effortLevel, environmentVariables });
-
-      switch (result.type) {
-        case 'success':
-          // Check if sessionId exists, if not return error
-          if (!result.sessionId) {
-            reply.code(500);
-            return {
-              success: false,
-              error: 'Failed to spawn session: no session ID returned'
-            };
-          }
-          return {
-            success: true,
-            sessionId: result.sessionId,
-            approvedNewDirectoryCreation: true
-          };
-        
-        case 'requestToApproveDirectoryCreation':
-          reply.code(409); // Conflict - user input needed
-          return { 
-            success: false,
-            requiresUserApproval: true,
-            actionRequired: 'CREATE_DIRECTORY',
-            directory: result.directory
-          };
-        
-        case 'error':
-          reply.code(500);
-          return { 
-            success: false,
-            error: result.errorMessage
-          };
-      }
-    });
-
-    // Stop daemon
-    typed.post('/stop', {
-      schema: {
-        response: {
-          200: z.object({
-            status: z.string()
-          })
-        }
-      }
-    }, async () => {
-      logger.debug('[CONTROL SERVER] Stop daemon request received');
-
-      // Give time for response to arrive
-      setTimeout(() => {
-        logger.debug('[CONTROL SERVER] Triggering daemon shutdown');
-        requestShutdown();
-      }, 50);
-
-      return { status: 'stopping' };
-    });
-
-    app.listen({ port: 0, host: '127.0.0.1' }, (err, address) => {
-      if (err) {
-        logger.debug('[CONTROL SERVER] Failed to start:', err);
-        throw err;
-      }
-
-      const port = parseInt(address.split(':').pop()!);
-      logger.debug(`[CONTROL SERVER] Started on port ${port}`);
-
-      resolve({
-        port,
-        stop: async () => {
-          logger.debug('[CONTROL SERVER] Stopping server');
-          await app.close();
-          logger.debug('[CONTROL SERVER] Server stopped');
-        }
-      });
-    });
+}, controlToken: string): FastifyInstance {
+  if (!/^[a-f0-9]{64}$/.test(controlToken)) throw new Error('Invalid daemon control token');
+  const app = fastify({
+    logger: false // We use our own logger
   });
+
+  // Authenticate before parsing bodies or dispatching any local operation.
+  // Browser origins and non-loopback Host headers have no legitimate use here.
+  app.addHook('onRequest', async (request, reply) => {
+    if (request.headers.origin !== undefined || !/^127\.0\.0\.1(?::\d{1,5})?$/.test(request.headers.host ?? '')) {
+      return reply.code(403).send({ error: 'Forbidden local control request' });
+    }
+    const supplied = Buffer.from(request.headers.authorization ?? '');
+    const expected = Buffer.from(`Bearer ${controlToken}`);
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      return reply.code(401).send({ error: 'Daemon authentication required' });
+    }
+  });
+
+  // Set up Zod type provider
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+  const typed = app.withTypeProvider<ZodTypeProvider>();
+
+  typed.post('/status', async () => getConnectionStatus?.() ?? { machineId: null, connected: false });
+
+  // Session reports itself after creation
+  typed.post('/session-started', {
+    schema: {
+      body: z.object({
+        sessionId: z.string(),
+        metadata: z.any(),
+        encryption: z.object({
+          encryptionKey: z.string(),
+          encryptionVariant: z.enum(['legacy', 'dataKey']),
+          seq: z.number(),
+          metadataVersion: z.number(),
+          agentStateVersion: z.number(),
+        }).optional()
+      }),
+      response: {
+        200: z.object({
+          status: z.literal('ok')
+        })
+      }
+    }
+  }, async (request) => {
+    const { sessionId, metadata, encryption } = request.body;
+
+    logger.debug(`[CONTROL SERVER] Session started: ${sessionId}`);
+
+    let encryptionData: SessionEncryptionData | undefined;
+    if (encryption) {
+      encryptionData = {
+        encryptionKey: decodeBase64(encryption.encryptionKey),
+        encryptionVariant: encryption.encryptionVariant,
+        seq: encryption.seq,
+        metadataVersion: encryption.metadataVersion,
+        agentStateVersion: encryption.agentStateVersion,
+      };
+    }
+
+    onHappySessionWebhook(sessionId, metadata, encryptionData);
+
+    return { status: 'ok' as const };
+  });
+
+  // List all tracked sessions
+  typed.post('/list', {
+    schema: {
+      response: {
+        200: z.object({
+          children: z.array(z.object({
+            startedBy: z.string(),
+            happySessionId: z.string(),
+            pid: z.number()
+          }))
+        })
+      }
+    }
+  }, async () => {
+    const children = getChildren();
+    logger.debug(`[CONTROL SERVER] Listing ${children.length} sessions`);
+    return {
+      children: children
+        .filter(child => child.happySessionId !== undefined)
+        .map(child => ({
+          startedBy: child.startedBy,
+          happySessionId: child.happySessionId!,
+          pid: child.pid
+        }))
+    }
+  });
+
+  // Stop specific session
+  typed.post('/stop-session', {
+    schema: {
+      body: z.object({
+        sessionId: z.string()
+      }),
+      response: {
+        200: z.object({
+          success: z.boolean()
+        })
+      }
+    }
+  }, async (request) => {
+    const { sessionId } = request.body;
+
+    logger.debug(`[CONTROL SERVER] Stop session request: ${sessionId}`);
+    const success = stopSession(sessionId);
+    return { success };
+  });
+
+  // Spawn new session
+  typed.post('/spawn-session', {
+    schema: {
+      body: z.object({
+        directory: z.string(),
+        sessionId: z.string().optional(),
+        agent: z.enum(['claude', 'codex', 'gemini', 'openclaw', 'agy']).optional(),
+        permissionMode: z.string().optional(),
+        modelMode: z.string().optional(),
+        effortLevel: z.string().optional(),
+        environmentVariables: z.record(z.string(), z.string()).optional(),
+      }),
+      response: {
+        200: z.object({
+          success: z.boolean(),
+          sessionId: z.string().optional(),
+          approvedNewDirectoryCreation: z.boolean().optional()
+        }),
+        409: z.object({
+          success: z.boolean(),
+          requiresUserApproval: z.boolean().optional(),
+          actionRequired: z.string().optional(),
+          directory: z.string().optional()
+        }),
+        500: z.object({
+          success: z.boolean(),
+          error: z.string().optional()
+        })
+      }
+    }
+  }, async (request, reply) => {
+    const { directory, sessionId, agent, permissionMode, modelMode, effortLevel, environmentVariables } = request.body;
+
+    logger.debug(`[CONTROL SERVER] Spawn session request: dir=${directory}, sessionId=${sessionId || 'new'}, agent=${agent || 'default'}`);
+    const result = await spawnSession({ directory, sessionId, agent, permissionMode, modelMode, effortLevel, environmentVariables });
+
+    switch (result.type) {
+      case 'success':
+        // Check if sessionId exists, if not return error
+        if (!result.sessionId) {
+          reply.code(500);
+          return {
+            success: false,
+            error: 'Failed to spawn session: no session ID returned'
+          };
+        }
+        return {
+          success: true,
+          sessionId: result.sessionId,
+          approvedNewDirectoryCreation: true
+        };
+
+      case 'requestToApproveDirectoryCreation':
+        reply.code(409); // Conflict - user input needed
+        return {
+          success: false,
+          requiresUserApproval: true,
+          actionRequired: 'CREATE_DIRECTORY',
+          directory: result.directory
+        };
+
+      case 'error':
+        reply.code(500);
+        return {
+          success: false,
+          error: result.errorMessage
+        };
+    }
+  });
+
+  // Stop daemon
+  typed.post('/stop', {
+    schema: {
+      response: {
+        200: z.object({
+          status: z.string()
+        })
+      }
+    }
+  }, async () => {
+    logger.debug('[CONTROL SERVER] Stop daemon request received');
+
+    // Give time for response to arrive
+    setTimeout(() => {
+      logger.debug('[CONTROL SERVER] Triggering daemon shutdown');
+      requestShutdown();
+    }, 50);
+
+    return { status: 'stopping' };
+  });
+
+  return app;
+}
+
+export async function startDaemonControlServer(options: Parameters<typeof createDaemonControlApp>[0]): Promise<{
+  port: number;
+  controlToken: string;
+  stop: () => Promise<void>;
+}> {
+  const controlToken = randomBytes(32).toString('hex');
+  const app = createDaemonControlApp(options, controlToken);
+  try {
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+    const port = Number(new URL(address).port);
+    logger.debug(`[CONTROL SERVER] Started on port ${port}`);
+    return { port, controlToken, stop: () => app.close() };
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
 }

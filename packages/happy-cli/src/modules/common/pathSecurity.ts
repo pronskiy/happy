@@ -1,4 +1,22 @@
-import { resolve, sep } from 'path';
+import { resolve, sep, dirname, basename, relative, isAbsolute } from 'path';
+import { lstatSync, realpathSync } from 'node:fs';
+
+// Resolve existing ancestors as well as the final component. A nonexistent
+// destination is allowed, but dangling links and inaccessible ancestors fail.
+function canonicalPath(path: string): string {
+    try {
+        lstatSync(path);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(path) === path) throw error;
+        return resolve(canonicalPath(dirname(path)), basename(path));
+    }
+    return realpathSync(path);
+}
+
+function isWithin(path: string, directory: string): boolean {
+    const child = relative(directory, path);
+    return child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+}
 
 export interface PathValidationResult {
     valid: boolean;
@@ -17,9 +35,7 @@ export function validatePath(targetPath: string, workingDirectory: string): Path
     const resolvedTarget = resolve(workingDirectory, targetPath);
     const resolvedWorkingDir = resolve(workingDirectory);
 
-    // Check if the resolved target path starts with the working directory
-    // Uses path.sep to work correctly on both Windows (\) and Unix (/)
-    if (!resolvedTarget.startsWith(resolvedWorkingDir + sep) && resolvedTarget !== resolvedWorkingDir) {
+    if (!isWithin(resolvedTarget, resolvedWorkingDir)) {
         return {
             valid: false,
             resolvedPath: resolvedTarget,
@@ -27,5 +43,14 @@ export function validatePath(targetPath: string, workingDirectory: string): Path
         };
     }
 
-    return { valid: true, resolvedPath: resolvedTarget };
+    try {
+        const canonicalRoot = canonicalPath(resolvedWorkingDir);
+        const canonicalTarget = canonicalPath(resolvedTarget);
+        if (!isWithin(canonicalTarget, canonicalRoot)) {
+            return { valid: false, error: `Access denied: Path '${targetPath}' is outside the working directory` };
+        }
+        return { valid: true, resolvedPath: canonicalTarget };
+    } catch {
+        return { valid: false, error: `Access denied: Cannot safely resolve path '${targetPath}'` };
+    }
 }

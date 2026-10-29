@@ -18,6 +18,10 @@ async function daemonPost(path: string, body?: any, timeoutMs?: number): Promise
     };
   }
 
+  if (!state.controlToken) {
+    return { error: 'The running daemon predates local authentication. Restart it with the updated CLI.' };
+  }
+
   try {
     process.kill(state.pid, 0);
   } catch (error) {
@@ -32,7 +36,8 @@ async function daemonPost(path: string, body?: any, timeoutMs?: number): Promise
     const timeout = timeoutMs ?? (process.env.HAPPY_DAEMON_HTTP_TIMEOUT ? parseInt(process.env.HAPPY_DAEMON_HTTP_TIMEOUT) : 10_000);
     const response = await fetch(`http://127.0.0.1:${state.httpPort}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.controlToken}` },
+      redirect: 'error',
       body: JSON.stringify(body || {}),
       // Mostly increased for stress test
       signal: AbortSignal.timeout(timeout)
@@ -162,19 +167,25 @@ export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolea
     return false;
   }
 
+  // Retain legacy state for the upgrade path, but never send unauthenticated
+  // requests (especially session encryption keys) to an old control server.
+  if (!state.controlToken) return true;
+
   // PID is alive, but on Windows PIDs get reused after reboot.
   // Verify it's actually our daemon by HTTP pinging its control server.
   if (state.httpPort) {
     try {
       const response = await fetch(`http://127.0.0.1:${state.httpPort}/list`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.controlToken}` },
+        redirect: 'error',
         body: '{}',
         signal: AbortSignal.timeout(5000)
       });
       if (response.ok) {
         return true;
       }
+      return false;
     } catch {
       // HTTP check failed - the PID is not our daemon (likely reused by OS after reboot)
       logger.debug(`[DAEMON RUN] PID ${state.pid} is alive but HTTP health check failed on port ${state.httpPort}, cleaning up stale state`);
@@ -223,7 +234,7 @@ export async function isDaemonRunningCurrentlyInstalledHappyVersion(): Promise<b
   // correctly detects real npm upgrades (the new bundle has a new baked version).
   const currentCliVersion = configuration.currentCliVersion;
   logger.debug(`[DAEMON CONTROL] Current CLI version: ${currentCliVersion}, Daemon started with version: ${state.startedWithCliVersion}`);
-  return currentCliVersion === state.startedWithCliVersion;
+  return Boolean(state.controlToken) && currentCliVersion === state.startedWithCliVersion;
 }
 
 export async function cleanupDaemonState(): Promise<void> {
@@ -244,6 +255,13 @@ export async function stopDaemon() {
     }
 
     logger.debug(`Stopping daemon with PID ${state.pid}`);
+
+    // Upgrade old daemons using a local signal, never by downgrading HTTP auth.
+    if (!state.controlToken) {
+      process.kill(state.pid, 'SIGTERM');
+      await waitForProcessDeath(state.pid, 5000);
+      return;
+    }
 
     // Try HTTP graceful stop
     try {

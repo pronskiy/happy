@@ -5,10 +5,11 @@
  * Environment files should be loaded using Node's --env-file flag
  */
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, parse } from 'node:path'
 import packageJson from '../package.json'
+import { ensurePrivateDirectory, readPrivateFileSync } from './utils/privateFiles'
 
 class Configuration {
   public readonly serverUrl: string
@@ -38,9 +39,13 @@ class Configuration {
     if (process.env.HAPPY_HOME_DIR) {
       // Expand ~ to home directory if present
       const expandedPath = process.env.HAPPY_HOME_DIR.replace(/^~/, homedir())
-      this.happyHomeDir = expandedPath
+      this.happyHomeDir = resolve(expandedPath)
     } else {
       this.happyHomeDir = join(homedir(), '.happy')
+    }
+
+    if (this.happyHomeDir === resolve(homedir()) || this.happyHomeDir === parse(this.happyHomeDir).root) {
+      throw new Error('HAPPY_HOME_DIR must be a dedicated directory, not your home directory or filesystem root')
     }
 
     this.logsDir = join(this.happyHomeDir, 'logs')
@@ -49,6 +54,9 @@ class Configuration {
     this.daemonStateFile = join(this.happyHomeDir, 'daemon.state.json')
     this.daemonLockFile = join(this.happyHomeDir, 'daemon.state.json.lock')
     this.sessionsFile = join(this.happyHomeDir, 'sessions.json')
+
+    ensurePrivateDirectory(this.happyHomeDir)
+    ensurePrivateDirectory(this.logsDir)
 
     // URL precedence (both): HAPPY_*_URL env > settings.<key> > default.
     // Settings are read sync here (avoid circular import with persistence.ts).
@@ -80,20 +88,13 @@ class Configuration {
       console.log('\x1b[33m🔧 DEV MODE\x1b[0m - Data: ' + this.happyHomeDir)
     }
 
-    if (!existsSync(this.happyHomeDir)) {
-      mkdirSync(this.happyHomeDir, { recursive: true })
-    }
-    // Ensure directories exist
-    if (!existsSync(this.logsDir)) {
-      mkdirSync(this.logsDir, { recursive: true })
-    }
   }
 }
 
 function readSettingsStringSync(settingsFile: string, key: 'serverUrl' | 'webappUrl'): string | undefined {
   try {
     if (!existsSync(settingsFile)) return undefined
-    const raw = JSON.parse(readFileSync(settingsFile, 'utf8'))
+    const raw = JSON.parse(readPrivateFileSync(settingsFile))
     const value = raw?.[key]
     return typeof value === 'string' && value.length > 0 ? value : undefined
   } catch {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildSessionChildEnvironment,
+    validateRequestedSessionEnvironment,
     sanitizeSessionEnvironment,
     SESSION_SCOPED_ENV_KEYS,
     sessionEnvironmentKeysToUnset,
@@ -79,5 +80,22 @@ describe('sessionEnvironment', () => {
         expect(command).toContain('CODEX_THREAD_ID');
         expect(command).not.toContain('unset HAPPY_FORK_CODEX_THREAD_ID');
         expect(command).toMatch(/node happy\.mjs codex$/);
+    });
+});
+
+describe('untrusted session environment overrides', () => {
+    it.each(['NODE_OPTIONS', 'NODE_PATH', 'PATH', 'Path', 'HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'HAPPY_SERVER_URL', 'DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING', '__proto__'])(
+        'rejects %s', key => {
+            expect(() => validateRequestedSessionEnvironment({ [key]: 'injected' })).toThrow('not allowed');
+        },
+    );
+    it('preserves allowed provider configuration and literal values', () => {
+        const input = { ANTHROPIC_AUTH_TOKEN: '${MY_TOKEN}', OPENAI_BASE_URL: 'https://provider.example', TMUX_SESSION_NAME: 'work' };
+        expect(validateRequestedSessionEnvironment(input)).toEqual(input);
+        expect(validateRequestedSessionEnvironment(input)).not.toBe(input);
+        expect(validateRequestedSessionEnvironment(undefined)).toEqual({});
+    });
+    it.each([null, [], 'bad', { OPENAI_API_KEY: 123 }, { OPENAI_API_KEY: 'bad\0value' }])('rejects malformed values', input => {
+        expect(() => validateRequestedSessionEnvironment(input)).toThrow();
     });
 });

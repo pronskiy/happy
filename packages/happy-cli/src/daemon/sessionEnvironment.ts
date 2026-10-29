@@ -18,6 +18,36 @@ export const SESSION_SCOPED_ENV_KEYS = [
     'CODEX_THREAD_ID',
 ] as const;
 
+// Remote spawn requests may configure providers, but must not change how Node,
+// the shell, or Happy itself starts. Ambient environment remains locally trusted.
+const REQUEST_ENVIRONMENT_KEYS = new Set([
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+    'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_USE_VERTEXAI',
+    'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_PROFILE', 'TMUX_SESSION_NAME',
+]);
+
+export function validateRequestedSessionEnvironment(env: unknown): Record<string, string> {
+    if (env === undefined) return {};
+    if (!env || typeof env !== 'object' || Array.isArray(env)) {
+        throw new Error('Session environment must be an object');
+    }
+    const accepted: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+        if (!REQUEST_ENVIRONMENT_KEYS.has(key)) {
+            throw new Error(`Session environment override is not allowed: ${key}`);
+        }
+        if (typeof value !== 'string' || value.includes('\0') || value.length > 65536) {
+            throw new Error(`Invalid session environment value for ${key}`);
+        }
+        accepted[key] = value;
+    }
+    return accepted;
+}
+
 /**
  * Remove session-scoped state inherited from a parent process without
  * modifying the source environment.
