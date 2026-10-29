@@ -44,7 +44,24 @@
         "overrides": {
             "whatwg-url": "14.2.0",
             "parse-path": "7.0.3",
-            "@types/parse-path": "7.0.3"
+            "@types/parse-path": "7.0.3",
+            "ws@7.x": "7.5.13",
+            "ws@8.x": "8.21.3",
+            "follow-redirects@1.x": "1.16.0",
+            "socket.io-parser@4.x": "4.2.7",
+            "shell-quote@1.x": "1.10.0",
+            "fast-uri@3.x": "3.1.7",
+            "ajv@8.x": "8.20.0",
+            "picomatch@2.x": "2.3.2",
+            "yaml@2.x": "2.9.0",
+            "hono@4.x": "4.13.7",
+            "@hono/node-server@1.x": "1.19.17",
+            "path-to-regexp@8.x": "8.4.2",
+            "qs@6.x": "6.16.0",
+            "body-parser@2.x": "2.3.0",
+            "ip-address@10.x": "10.7.0",
+            "effect@3.x": "3.22.2",
+            "defu@6.x": "6.1.7"
         },
         "onlyBuiltDependencies": [
             "@more-tech/react-native-libsodium",
