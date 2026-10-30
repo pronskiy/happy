@@ -18,6 +18,7 @@ This folder documents how Happy works internally, with a focus on protocol, back
 - permission-resolution.md: State-based permission mode resolution across app and CLI (including sandbox behavior).
 - happy-wire.md: Shared wire schemas/types package and migration notes.
 - voice-architecture.md: ElevenLabs voice assistant integration, session routing, context batching, and VAD detection.
+- voice-byo-agent.md: Running voice against your own ElevenLabs agent (bypass mode) — agent setup, client tools, and troubleshooting.
 - research/: general research notes and exploratory writeups.
 - competition/: competitor research, protocol analysis, and comparison notes.
 - competition/AGENTS.md: structure and rules for storing competitor research results without committing raw checkouts.

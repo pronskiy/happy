@@ -21,7 +21,7 @@ types.ts                   Shared type definitions
 
 A single module-level variable `currentSessionId` in `RealtimeSession.ts` controls which session the voice agent's tool calls route to. It is the single source of truth for both:
 
-- **Routing**: `messageClaudeCode` and `processPermissionRequest` in `realtimeClientTools.ts` read it via `getCurrentRealtimeSessionId()`.
+- **Routing**: `sendMessageToSession` and `processPermissionRequest` in `realtimeClientTools.ts` read it via `getCurrentRealtimeSessionId()`.
 - **Focus dedup**: `voiceHooks.onSessionFocus()` compares against it to avoid re-injecting context for the already-focused session.
 
 When the user navigates to a different session while voice is active, `onSessionFocus` updates `currentSessionId` so subsequent voice commands route to the newly viewed session.
@@ -40,7 +40,7 @@ sync.onSessionVisible("B")
   └──> voiceHooks.onSessionFocus("B")
          └──> setCurrentRealtimeSessionId("B")
 
-Voice agent calls messageClaudeCode
+Voice agent calls sendMessageToSession
   └──> getCurrentRealtimeSessionId() → "B"
 ```
 
@@ -140,7 +140,7 @@ ElevenLabs SDK
 
 The voice agent can invoke these client tools (defined in `realtimeClientTools.ts`):
 
-- **messageClaudeCode** — sends a text message to the currently focused session via `sync.sendMessage(sessionId, message)`.
+- **sendMessageToSession** — sends a text message to the currently focused session via `sync.sendMessage(sessionId, message)`.
 - **processPermissionRequest** — allows or denies a pending permission request on the current session.
 
 Both read the target session from `getCurrentRealtimeSessionId()`.
@@ -169,3 +169,4 @@ User taps mic again (or navigates away)
 ## Related
 
 - `docs/plans/elevenlabs-voice-usage-gating.md` — usage gating and paywall flow for voice sessions.
+- `docs/voice-byo-agent.md` — running voice against your own ElevenLabs agent (bypass mode).
