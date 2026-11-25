@@ -32,6 +32,7 @@ import type { ResumeSessionOptions } from '@/api/apiMachine';
 import {
   buildSessionChildEnvironment,
   sanitizeSessionEnvironment,
+  validateRequestedSessionEnvironment,
   wrapTmuxCommandWithSessionEnvironmentSanitizer,
 } from './sessionEnvironment';
 import { startHappyTerminalDaemon } from './happyTerminalBoot';
@@ -278,6 +279,13 @@ export async function startDaemon(): Promise<void> {
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[DAEMON RUN] Spawning session', options);
 
+      let requestedEnvironment: Record<string, string>;
+      try {
+        requestedEnvironment = validateRequestedSessionEnvironment(options.environmentVariables);
+      } catch (error) {
+        return { type: 'error', errorMessage: error instanceof Error ? error.message : 'Invalid session environment' };
+      }
+
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       let directoryCreated = false;
 
@@ -338,7 +346,7 @@ export async function startDaemon(): Promise<void> {
             const codexHomeDir = tmp.dirSync();
 
             // Write the token to the temporary directory
-            await fs.writeFile(join(codexHomeDir.name, 'auth.json'), options.token);
+            await fs.writeFile(join(codexHomeDir.name, 'auth.json'), options.token, { mode: 0o600 });
 
             // Set the environment variable for Codex
             authEnv.CODEX_HOME = codexHomeDir.name;
@@ -349,7 +357,7 @@ export async function startDaemon(): Promise<void> {
 
         let extraEnv: Record<string, string> = {
           ...authEnv,
-          ...sanitizeSessionEnvironment(options.environmentVariables ?? {}),
+          ...requestedEnvironment,
         };
         if (options.parentSessionId) {
           extraEnv.HAPPY_FORKED_FROM_SESSION_ID = options.parentSessionId;
